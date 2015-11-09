@@ -164,6 +164,32 @@ func (c *ClientConn) getShardConns(fromSlave bool, plan *router.Plan) (map[strin
 	return conns, err
 }
 
+func (c *ClientConn) executeInNodeDirect(conn *backend.BackendConn, sql string) ([]byte, error) {
+	var state string
+	r, err := conn.ExecuteDirect(sql)
+	if err != nil {
+		state = "ERROR"
+	} else {
+		state = "INFO"
+	}
+	if strings.ToLower(c.proxy.cfg.LogSql) != golog.LogSqlOff {
+		golog.OutputSql(state, "%s->%s:%s",
+			c.c.RemoteAddr(),
+			conn.GetAddr(),
+			sql,
+		)
+	}
+	if err != nil {
+		//Error Packet has in r
+		if err == errors.ErrPacket {
+			return r, nil
+		}
+		return nil, err
+	}
+
+	return r, nil
+}
+
 func (c *ClientConn) executeInNode(conn *backend.BackendConn, sql string, args []interface{}) ([]*mysql.Result, error) {
 	var state string
 	r, err := conn.Execute(sql, args...)
@@ -427,7 +453,7 @@ func (c *ClientConn) GetExecNode(tokens []string,
 
 //返回true表示已经处理，false表示未处理
 func (c *ClientConn) preHandleShard(sql string) (bool, error) {
-	var rs []*mysql.Result
+	var rs []byte
 	var err error
 
 	var execNode *backend.Node
@@ -441,7 +467,6 @@ func (c *ClientConn) preHandleShard(sql string) (bool, error) {
 	if len(tokens) == 0 {
 		return false, errors.ErrCmdUnsupport
 	}
-
 	if c.isInTransaction() {
 		execNode, err = c.GetTransExecNode(tokens, sql)
 	} else {
@@ -451,6 +476,7 @@ func (c *ClientConn) preHandleShard(sql string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+
 	//need shard sql
 	if execNode == nil {
 		return false, nil
@@ -461,8 +487,10 @@ func (c *ClientConn) preHandleShard(sql string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	rs, err = c.executeInNode(conn, sql, nil)
+
+	rs, err = c.executeInNodeDirect(conn, sql)
 	if err != nil {
+		c.writeError(err)
 		return false, err
 	}
 	c.closeConn(conn, false)
@@ -470,14 +498,10 @@ func (c *ClientConn) preHandleShard(sql string) (bool, error) {
 	if len(rs) == 0 {
 		msg := fmt.Sprintf("result is empty")
 		golog.Error("ClientConn", "handleUnsupport", msg, c.connectionId)
-		return false, mysql.NewError(mysql.ER_UNKNOWN_ERROR, msg)
+		err = c.writeError(mysql.NewError(mysql.ER_UNKNOWN_ERROR, msg))
+		return false, err
 	}
-
-	if rs[0].Resultset != nil {
-		err = c.writeResultset(c.status, rs[0].Resultset)
-	} else {
-		err = c.writeOK(rs[0])
-	}
+	err = c.writeResultsetDirect(rs)
 	if err != nil {
 		return false, err
 	}

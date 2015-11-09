@@ -122,6 +122,12 @@ func (c *ClientConn) buildResultset(fields []*mysql.Field, names []string, value
 	return r, nil
 }
 
+func (c *ClientConn) writeResultsetDirect(resultSet []byte) error {
+	if len(resultSet) == 0 {
+		return fmt.Errorf("result is nil")
+	}
+	return c.pkg.WritePacketDirect(resultSet)
+}
 func (c *ClientConn) writeResultset(status uint16, r *mysql.Resultset) error {
 	c.affectedRows = int64(-1)
 	total := make([]byte, 0, 1024)

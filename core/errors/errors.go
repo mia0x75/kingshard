@@ -22,6 +22,12 @@ var (
 	ErrAddressNull     = errors.New("address is nil")
 	ErrInvalidArgument = errors.New("argument is invalid")
 	ErrCmdUnsupport    = errors.New("command unsupport")
+	ErrInvalidCharset  = errors.New("invalid charset")
+	ErrInvalidProtocol = errors.New("invalid protocol version")
+	ErrFieldList       = errors.New("field list error")
+	ErrPacket          = errors.New("error packet")
+	ErrInitHandshake   = errors.New("read initial handshake error")
+	ErrInvalidOKPacket = errors.New("invalid ok packet")
 
 	ErrLocationsCount = errors.New("locations count are not equal")
 	ErrNoCriteria     = errors.New("plan have no criteria")

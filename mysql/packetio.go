@@ -14,6 +14,12 @@ type PacketIO struct {
 	Sequence uint8
 }
 
+type PacketSection struct {
+	Buffer       []byte
+	NextPkgLen   uint32
+	NextPkgState uint8
+}
+
 func NewPacketIO(conn net.Conn) *PacketIO {
 	p := new(PacketIO)
 
@@ -23,6 +29,46 @@ func NewPacketIO(conn net.Conn) *PacketIO {
 	p.Sequence = 0
 
 	return p
+}
+
+func (p *PacketIO) WritePacketDirect(data []byte) error {
+	count := len(data)
+	if count == 0 {
+		return fmt.Errorf("packet is nill")
+	}
+	if n, err := p.wb.Write(data); err != nil {
+		return ErrBadConn
+	} else if n != count {
+		return ErrBadConn
+	}
+	return nil
+}
+
+//
+func (p *PacketIO) ReadPacketBySection(length uint32, withHeader bool) (*PacketSection, error) {
+	if length <= 0 {
+		return nil, nil
+	}
+	ps := new(PacketSection)
+	if withHeader {
+		ps.Buffer = make([]byte, uint32(length+4))
+	} else {
+		ps.Buffer = make([]byte, uint32(length))
+	}
+
+	if _, err := io.ReadFull(p.rb, ps.Buffer); err != nil {
+		return nil, ErrBadConn
+	}
+	if withHeader {
+		//the last byte
+		ps.NextPkgState = ps.Buffer[length+3]
+		//next package length
+		ps.NextPkgLen = uint32(uint32(ps.Buffer[length-1]) |
+			uint32(ps.Buffer[length])<<8 |
+			uint32(ps.Buffer[length+1])<<16)
+	}
+
+	return ps, nil
 }
 
 func (p *PacketIO) ReadPacket() ([]byte, error) {

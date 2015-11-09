@@ -3,12 +3,12 @@ package backend
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"time"
 
+	"github.com/flike/kingshard/core/errors"
 	"github.com/flike/kingshard/mysql"
 )
 
@@ -119,6 +119,12 @@ func (c *Conn) Close() error {
 	return nil
 }
 
+func (c *Conn) readPacketBySection(length uint32, withHeader bool) (*mysql.PacketSection, error) {
+	ps, err := c.pkg.ReadPacketBySection(length, withHeader)
+	c.pkgErr = err
+	return ps, err
+}
+
 func (c *Conn) readPacket() ([]byte, error) {
 	d, err := c.pkg.ReadPacket()
 	c.pkgErr = err
@@ -138,11 +144,11 @@ func (c *Conn) readInitialHandshake() error {
 	}
 
 	if data[0] == mysql.ERR_HEADER {
-		return errors.New("read initial handshake error")
+		return errors.ErrInitHandshake
 	}
 
 	if data[0] < mysql.MinProtocolVersion {
-		return fmt.Errorf("invalid protocol version %d, must >= 10", data[0])
+		return errors.ErrInvalidProtocol
 	}
 
 	//skip mysql version and connection id
@@ -408,7 +414,7 @@ func (c *Conn) SetCharset(charset string) error {
 
 	cid, ok := mysql.CharsetIds[charset]
 	if !ok {
-		return fmt.Errorf("invalid charset %s", charset)
+		return errors.ErrInvalidCharset
 	}
 
 	if _, err := c.exec(fmt.Sprintf("set names %s", charset)); err != nil {
@@ -450,7 +456,39 @@ func (c *Conn) FieldList(table string, wildcard string) ([]*mysql.Field, error) 
 			fs = append(fs, f)
 		}
 	}
-	return nil, fmt.Errorf("field list error")
+	return nil, errors.ErrFieldList
+}
+
+func (c *Conn) ExecuteDirect(query string) ([]byte, error) {
+	if err := c.writeCommandStr(mysql.COM_QUERY, query); err != nil {
+		return nil, err
+	}
+	totoal := make([]byte, 0, 1024)
+	data, err := c.readPacket()
+	if err != nil {
+		return nil, err
+	}
+	length := len(data)
+	//the first packet number is one
+	header := []byte{0, 0, 0, 1}
+	header[0] = byte(length)
+	header[1] = byte(length >> 8)
+	header[2] = byte(length >> 16)
+	totoal = append(totoal, header...)
+	totoal = append(totoal, data...)
+	//data[0] is packet state
+	switch data[0] {
+	//return the first packet
+	case mysql.OK_HEADER:
+		return totoal, nil
+	case mysql.ERR_HEADER:
+		return totoal, errors.ErrPacket
+	case mysql.LocalInFile_HEADER:
+		return nil, mysql.ErrMalformPacket
+	//return the result
+	default:
+		return c.readResultsetDirect(data)
+	}
 }
 
 func (c *Conn) exec(query string) (*mysql.Result, error) {
@@ -459,6 +497,46 @@ func (c *Conn) exec(query string) (*mysql.Result, error) {
 	}
 
 	return c.readResult(false)
+}
+
+//data is the first packet,Resultset header packet
+func (c *Conn) readResultsetDirect(data []byte) ([]byte, error) {
+	var eofCount int
+
+	//the first packet num is 1
+	header := []byte{0, 0, 0, 1}
+	totoal := make([]byte, 0, 1024)
+	length := len(data)
+	header[0] = byte(length)
+	header[1] = byte(length >> 8)
+	header[2] = byte(length >> 16)
+	totoal = append(totoal, header...)
+	totoal = append(totoal, data...)
+
+	//read the next package length and state
+	ps, err := c.readPacketBySection(1, true)
+	if err != nil {
+		return nil, err
+	}
+	//result include two eof packets
+	for {
+		totoal = append(totoal, ps.Buffer...)
+		if ps.NextPkgState == mysql.EOF_HEADER && ps.NextPkgLen <= 5 {
+			eofCount++
+			if eofCount == 2 {
+				//eof state has read,so the length is ps.NextPkgLen-1
+				ps, err = c.readPacketBySection(ps.NextPkgLen-1, false)
+				totoal = append(totoal, ps.Buffer...)
+				break
+			}
+		}
+		ps, err = c.readPacketBySection(ps.NextPkgLen, true)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return totoal, nil
 }
 
 func (c *Conn) readResultset(data []byte, binary bool) (*mysql.Result, error) {
@@ -648,7 +726,7 @@ func (c *Conn) readOK() (*mysql.Result, error) {
 	} else if data[0] == mysql.ERR_HEADER {
 		return nil, c.handleErrorPacket(data)
 	} else {
-		return nil, errors.New("invalid ok packet")
+		return nil, errors.ErrInvalidOKPacket
 	}
 }
 
