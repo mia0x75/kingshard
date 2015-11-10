@@ -110,13 +110,11 @@ func (c *Conn) ReConnect() error {
 	return nil
 }
 
-func (c *Conn) Close() error {
+func (c *Conn) Close() {
 	if c.conn != nil {
 		c.conn.Close()
 		c.conn = nil
 	}
-
-	return nil
 }
 
 func (c *Conn) readPacketBySection(length uint32, withHeader bool) (*mysql.PacketSection, error) {
